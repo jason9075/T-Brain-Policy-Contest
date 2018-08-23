@@ -110,6 +110,7 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   return po_agg
   policy = pd.read_csv('policy_claim/policy_0702.csv')
   
+  policy['Flag_first_year_policy'] = policy['lia_class'].apply(lambda x: 1 if x==4 else 0)
   policy['Manafactured_Year_and_Month_diff'] = 2018 - policy['Manafactured_Year_and_Month']  
   policy['Cancellation'], _ = pd.factorize(policy['Cancellation'])
   policy['Imported_or_Domestic_Car'] = "index_" + policy['Imported_or_Domestic_Car'].astype(str)
@@ -209,7 +210,7 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
  
   policy_agg = policy_agg.join(policy_curr_agg, how='left', on='Policy_Number')
   
-  del policy
+  del policy, policy_curr_agg
   gc.collect()
     
   #cached
@@ -420,7 +421,6 @@ def main(file_name='default.csv'):
       df = df.join(cl, how='left', on='Policy_Number')
       del cl
       gc.collect()
-      
     with timer("Run train with full data"):
       print(df.shape)
       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
@@ -428,43 +428,30 @@ def main(file_name='default.csv'):
       sub_df, val_label, val_train = kfold_lgb(df, num_folds= 5)
       gc.collect()
       
-      
-    with timer("Run train with claim data"):
-      claim_df = df[df['CLAIM_COUNT'].notnull()].copy()
-      print(claim_df.shape)
-      claim_df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
-      print(claim_df.shape)
-      sub_df_claim, val_label_claim, val_train_claim = kfold_lgb(claim_df, num_folds= 5)
-      del claim_df
-      gc.collect()
-    with timer("Run train with no claim data"):
-      policy_columns = [c for c in df.columns if c[:5] != 'CLAIM']
-      no_claim_df = df[policy_columns]
-      print(no_claim_df.shape)
-      no_claim_df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
-      gc.collect()
-      print(no_claim_df.shape)
-      sub_df_no_claim, val_label_no_claim, val_train_no_claim = kfold_lgb(no_claim_df, num_folds= 5)
-    with timer("Run train with 0/1 data"):
-      df['Next_Premium'] = df['Next_Premium'].apply(lambda x: np.nan if pd.isnull(x) else 1 if x>1 else 0)
-      df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
-      gc.collect()
-      print(df.shape)
-      sub_df_no_claim_cat, val_label_no_claim_cat, val_train_no_claim_cat = kfold_lgb_cat(df, num_folds= 5)
-  
-    
-  
-    mix = val_train_no_claim.merge(val_train_claim, how='left', on='Policy_Number')
-    mix['Next_Premium']= mix[['Next_Premium_x', 'Next_Premium_y']].mean(axis=1)  
-    
-    mean_absolute_error(val_label_no_claim)
-    
-    sub_df[['Policy_Number', 'Next_Premium']].to_csv('submission_log_score_curr.csv', index= False)
+    sub_df[['Policy_Number', 'Next_Premium']].to_csv(file_name, index= False)
 
+      
+# =============================================================================
+#       
+#     with timer("Run train with 0/1 data"):
+#       df['Next_Premium'] = df['Next_Premium'].apply(lambda x: np.nan if pd.isnull(x) else 1 if x>1 else 0)
+#       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
+#       gc.collect()
+#       print(df.shape)
+#       sub_df_no_claim_cat, val_label_no_claim_cat, val_train_no_claim_cat = kfold_lgb_cat(df, num_folds= 5)
+#   
+#     
+#   
+#     mix = val_train_no_claim.merge(val_train_claim, how='left', on='Policy_Number')
+#     mix['Next_Premium']= mix[['Next_Premium_x', 'Next_Premium_y']].mean(axis=1)  
+#     
+#     mean_absolute_error(val_label_no_claim)
+# =============================================================================
+    
 
 if __name__ == "__main__":
     with timer("Full model run"):
-      main(file_name='submission_log_score2.csv')
+      main(file_name='submission_log_score3.csv')
 
 '''
 base = pd.read_csv('default_basline.csv')
