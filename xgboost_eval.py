@@ -11,10 +11,9 @@ import pandas as pd
 import gc
 import time
 from contextlib import contextmanager
-import lightgbm as lgb
+import xgboost as xgb
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import KFold
-from sklearn.metrics import roc_auc_score, roc_curve
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -225,9 +224,9 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   #cached
   # policy_agg.to_pickle('policy_cached')
 
-def kfold_lgb(df, num_folds, output_name):
+def kfold_xgb(df, num_folds, output_name):
     # Divide in training/validation and test data
-    train_df = df[df['Next_Premium'].notnull()]
+    train_df =df[df['Next_Premium'].notnull()]
     test_df = df[df['Next_Premium'].isnull()]
     print("Starting LGB. Train shape: {}, test shape: {}".format(train_df.shape, test_df.shape))
     del df
@@ -245,63 +244,49 @@ def kfold_lgb(df, num_folds, output_name):
     train_scores = []
 
     for n_fold, (train_idx, valid_idx) in enumerate(folds.split(train_df[feats], train_df['Next_Premium'])):
-      dtrain = lgb.Dataset(data=train_df[feats].iloc[train_idx], 
-                             label=train_df['Next_Premium'].iloc[train_idx], 
-                             free_raw_data=False, silent=True)
-      dvalid = lgb.Dataset(data=train_df[feats].iloc[valid_idx], 
-                           label=train_df['Next_Premium'].iloc[valid_idx], 
-                           free_raw_data=False, silent=True)
       
-      # LightGBM parameters found by Bayesian optimization
+      # Training data for the fold
+      train_features, train_labels = np.array(train_df[feats].iloc[train_idx]), train_df['Next_Premium'].iloc[train_idx]
+      # Validation data for the fold
+      valid_features, valid_labels = np.array(train_df[feats].iloc[valid_idx]), train_df['Next_Premium'].iloc[valid_idx]
+      
+      # XGB parameters 
       params = {
-          'objective': 'regression_l1',
-          'boosting_type': 'gbdt',
-          'nthread': 2,
-          'learning_rate': 0.1,  # 02,
-          'num_leaves': 64,
-          'colsample_bytree': 0.9497036,
-          'subsample': 0.8715623,
-          'subsample_freq': 1,
-          'max_depth': 6,
-          'reg_alpha': 0.041545473,
-          'reg_lambda': 0.0735294,
-          'min_split_gain': 0.0222415,
-          'min_child_weight': 60, # 39.3259775,
-          'seed': 0,
-          'verbose': -1,
-          'metric': 'l1',
+        'max_depth':6,
+        'min_child_weight':60,
+        'learning_rate':0.1,
+        'subsample':0.8715623,
+        'colsample_bytree':0.6,
+        'obj':'reg:linear',
+        'n_estimators':1000,
+        'eval_metric': 'mae'
       }
-      #evals_result = {} 
+      clf = xgb.XGBModel(**params)
       
-      clf = lgb.train(
-          params=params,
-          train_set=dtrain,
-          num_boost_round=10000,
-          valid_sets=[dtrain, dvalid],
+      clf.fit(
+          train_features,
+          train_labels,
+          eval_set=[(train_features, train_labels), (valid_features,valid_labels)],
           early_stopping_rounds=100,
-          #evals_result=evals_result,
-          verbose_eval=False
+          verbose=False
       )
-      
-      #print('Plot metrics recorded during training...')
-      #lgb.plot_metric(evals_result, metric='l1')
 
-      oof_preds[valid_idx] = clf.predict(dvalid.data)
-      sub_preds += clf.predict(test_df[feats]) / folds.n_splits
+      oof_preds[valid_idx] = clf.predict(valid_features)
+      sub_preds += clf.predict(np.array(test_df[feats])) / folds.n_splits
       
-      valid_score = clf.best_score['valid_1']['l1']
-      train_score = clf.best_score['training']['l1']
+      valid_score = clf.best_score
+      train_score = min(clf.evals_result()['validation_0']['mae'])
       
       valid_scores.append(valid_score)
       train_scores.append(train_score)
       
       fold_importance_df = pd.DataFrame()
       fold_importance_df["feature"] = feats
-      fold_importance_df["importance"] = clf.feature_importance(importance_type='gain')
+      fold_importance_df["importance"] = clf.feature_importances_
       fold_importance_df["fold"] = n_fold + 1
       feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
-      print('Fold %2d MAE : %.6f' % (n_fold + 1, mean_absolute_error(dvalid.label, oof_preds[valid_idx])))
-      del clf, dtrain, dvalid
+      print('Fold %2d MAE : %.6f' % (n_fold + 1, mean_absolute_error(valid_labels, oof_preds[valid_idx])))
+      del clf, train_features, train_labels, valid_features, valid_labels
       gc.collect()
       
       
@@ -355,7 +340,7 @@ def main(file_name='default.csv'):
       print(df.shape)
       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
       print(df.shape)
-      sub_df_1, val_label_1, val_train_1 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_1')
+      sub_df_1, val_label_1, val_train_1 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_1')
       df_raw = df_raw.merge(val_train_1, how='left',  on='Policy_Number')
       gc.collect()
     with timer("Run train with full data 2"):
@@ -363,7 +348,7 @@ def main(file_name='default.csv'):
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
       df = df[~mask]
       print(df.shape)
-      sub_df_2, _, val_train_2 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_2')
+      sub_df_2, _, val_train_2 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_2')
       df_raw = df_raw.merge(val_train_2, how='left',  on='Policy_Number')
       del val_train_1
       gc.collect()
@@ -372,77 +357,23 @@ def main(file_name='default.csv'):
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
       df = df[~mask]
       print(df.shape)
-      sub_df_3, _, val_train_3 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_3')
+      sub_df_3, _, val_train_3 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_3')
       df_raw = df_raw.merge(val_train_3, how='left',  on='Policy_Number')
       del val_train_2
       gc.collect()
-    
-    with timer("blend output"):
+
+    with timer("blend out put"):
       sub_df = sub_df_1.merge(sub_df_2, how='left',  on='Policy_Number')
       sub_df = sub_df.merge(sub_df_3, how='left',  on='Policy_Number')
+
+
       sub_df['Next_Premium'] = 0.33*sub_df['Next_Premium_1'] + \
                         0.33*sub_df['Next_Premium_2'] + \
                         0.34*sub_df['Next_Premium_3']
       sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_blend.csv', index= False)
 
-      
-    #sub_df['diff'] = sub_df['Next_Premium'] - sub_df['Next_Premium_1']   
 
 if __name__ == "__main__":
     with timer("Full model run"):
       main(file_name='submission_log_score5.csv')
 
-'''
-base = pd.read_csv('default_basline.csv')
-
-df_raw = pd.read_csv('training-set.csv')
-
-
-df_raw.to_pickle('df_raw_cached')
-
-sns.distplot(df_raw['Next_Premium'], label = 'true')
-sns.distplot(df_raw['Next_Premium_1'], label = '1')
-sns.distplot(df_raw['Next_Premium_7'].fillna(0), label = '2')
-plt.legend()
-
-
-result = pd.read_csv('submission_log_score4.csv')
-
-val_train['Next_Premium_0'] = val_train['Next_Premium'].apply(lambda x: 0 if x<100 else x)
-
-df_raw = df_raw.merge(val_train,how='left',on='Policy_Number')
-df_raw['diff'] = df_raw['Next_Premium_x'] - df_raw['Next_Premium_y']
-
-mean_absolute_error(val_label, val_train['Next_Premium'])
-
-df = pd.read_csv('training-set.csv')
-
-val_train_0 = val_train[val_train['Next_Premium']<1]
-df_0 = df[df['Next_Premium']==0]
-df_0 = df_0.merge(val_train_0, how='left',on='Policy_Number')
-df_0 = df_0[df_0['Next_Premium_y'].notnull()]
-df_0.drop(columns=['Next_Premium_x'],inplace=True)
-df = pd.read_csv('training-set.csv')
-df = df.merge(df_0, how='left',on='Policy_Number')
-df = df[df['Next_Premium_y'].isnull()]
-df.drop(columns=['Next_Premium_y'],inplace=True)
-
-df['Next_Premium'] = df['Next_Premium'].apply(lambda x: 1 if x > 0 else x)
-
-
-df = df.merge(val_train_no_claim_cat, how='left', on='Policy_Number')
-
-
-df = df.merge(df_0,how='left',on='Policy_Number')
-
-df_sec_0.to_pickle('df_sec_0_cached')
-val_train = val_train.merge(df_sec_0, how='left', on='Policy_Number' )
-
-1731 -> 1730 -> 1728
-val_train['set_0'] = val_train['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
-mean_absolute_error(val_label, val_train['set_0'])
-val_train['second_set_0'] = val_train.apply(lambda x: 0 if pd.notnull(x['Next_Premium_y']) else x['set_0'], axis=1)
-mean_absolute_error(val_label, val_train['second_set_0'])
-
-
-'''
