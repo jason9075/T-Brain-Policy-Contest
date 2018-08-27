@@ -14,7 +14,6 @@ from contextlib import contextmanager
 import lightgbm as lgb
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import KFold
-from sklearn.metrics import roc_auc_score, roc_curve
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -313,12 +312,12 @@ def kfold_lgb(df, num_folds, output_name):
     
     sub_df = test_df[['Policy_Number']].copy()
     sub_df['Next_Premium'] = sub_preds
-    sub_df['Next_Premium'] = sub_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
+    #sub_df['Next_Premium'] = sub_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
     sub_df.rename(columns={'Next_Premium': output_name}, inplace=True)
     
     val_df = train_df[['Policy_Number']].copy()
     val_df['Next_Premium'] = oof_preds
-    val_df['Next_Premium'] = val_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
+    #val_df['Next_Premium'] = val_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
     val_df.rename(columns={'Next_Premium': output_name}, inplace=True)
 
     return sub_df, train_df['Next_Premium'], val_df
@@ -359,7 +358,7 @@ def main(file_name='default.csv'):
       df_raw = df_raw.merge(val_train_1, how='left',  on='Policy_Number')
       gc.collect()
     with timer("Run train with full data 2"):
-      df_to_remove = val_train_1[val_train_1['Next_Premium_1']==0]['Policy_Number']
+      df_to_remove = val_train_1[(3000<val_train_1['Next_Premium_1'])&(val_train_1['Next_Premium_1']<5000)]['Policy_Number']
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
       df = df[~mask]
       print(df.shape)
@@ -368,7 +367,7 @@ def main(file_name='default.csv'):
       del val_train_1
       gc.collect()
     with timer("Run train with full data 3"):
-      df_to_remove = val_train_2[val_train_2['Next_Premium_2']==0]['Policy_Number']
+      df_to_remove = val_train_2[(1500<val_train_2['Next_Premium_2'])&(val_train_2['Next_Premium_2']<3000)]['Policy_Number']
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
       df = df[~mask]
       print(df.shape)
@@ -376,18 +375,66 @@ def main(file_name='default.csv'):
       df_raw = df_raw.merge(val_train_3, how='left',  on='Policy_Number')
       del val_train_2
       gc.collect()
+    with timer("Run train with full data 4"):
+      df_to_remove = val_train_3[(5000<val_train_3['Next_Premium_3'])&(val_train_3['Next_Premium_3']<10000)]['Policy_Number']
+      mask = df['Policy_Number'].isin(df_to_remove.tolist())
+      df = df[~mask]
+      print(df.shape)
+      sub_df_4, _, val_train_4 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_4')
+      df_raw = df_raw.merge(val_train_4, how='left',  on='Policy_Number')
+      del val_train_3
+      gc.collect()
+    with timer("Run train with full data 5"):
+      df_to_remove = val_train_4[(10000<val_train_4['Next_Premium_4'])&(val_train_4['Next_Premium_4']<60000)]['Policy_Number']
+      mask = df['Policy_Number'].isin(df_to_remove.tolist())
+      df = df[~mask]
+      print(df.shape)
+      sub_df_5, _, val_train_5 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_5')
+      df_raw = df_raw.merge(val_train_5, how='left',  on='Policy_Number')
+      del val_train_4
+      gc.collect()
     
     with timer("blend output"):
       sub_df = sub_df_1.merge(sub_df_2, how='left',  on='Policy_Number')
       sub_df = sub_df.merge(sub_df_3, how='left',  on='Policy_Number')
-      sub_df['Next_Premium'] = 0.33*sub_df['Next_Premium_1'] + \
-                        0.33*sub_df['Next_Premium_2'] + \
-                        0.34*sub_df['Next_Premium_3']
-      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_blend.csv', index= False)
+      sub_df = sub_df.merge(sub_df_4, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_5, how='left',  on='Policy_Number')
+      
+      sub_df['Next_Premium_1'] = sub_df['Next_Premium_1'].apply(lambda x: 0 if x<0 else x)
+      sub_df['Next_Premium_2'] = sub_df['Next_Premium_2'].apply(lambda x: 0 if x<0 else x)
+      sub_df['Next_Premium_3'] = sub_df['Next_Premium_3'].apply(lambda x: 0 if x<0 else x)
+      sub_df['Next_Premium_4'] = sub_df['Next_Premium_4'].apply(lambda x: 0 if x<0 else x)
+
+      sub_df.loc[0==sub_df['Next_Premium_1'],'Next_Premium_2'] = np.nan
+      sub_df.loc[0==sub_df['Next_Premium_1'],'Next_Premium_3'] = np.nan
+      sub_df.loc[0==sub_df['Next_Premium_1'],'Next_Premium_4'] = np.nan
+      
+      sub_df.loc[0==sub_df['Next_Premium_2'],'Next_Premium_1'] = np.nan
+      sub_df.loc[0==sub_df['Next_Premium_2'],'Next_Premium_3'] = np.nan
+      sub_df.loc[0==sub_df['Next_Premium_2'],'Next_Premium_4'] = np.nan
+
+      sub_df.loc[0==sub_df['Next_Premium_3'],'Next_Premium_1'] = np.nan
+      sub_df.loc[0==sub_df['Next_Premium_3'],'Next_Premium_2'] = np.nan
+      sub_df.loc[0==sub_df['Next_Premium_3'],'Next_Premium_4'] = np.nan
+
+
+      sub_df.loc[(1500<sub_df['Next_Premium_2'])&(sub_df['Next_Premium_2']<3000),'Next_Premium_3'] = np.nan
+      sub_df.loc[(1500<sub_df['Next_Premium_2'])&(sub_df['Next_Premium_2']<3000),'Next_Premium_4'] = np.nan
+
+      sub_df.loc[(5000<sub_df['Next_Premium_3'])&(sub_df['Next_Premium_3']<10000),'Next_Premium_4'] = np.nan
+    
+      sub_df.loc[57000<sub_df['Next_Premium_4'],'Next_Premium_1'] = np.nan
+      sub_df.loc[57000<sub_df['Next_Premium_4'],'Next_Premium_2'] = np.nan
+      sub_df.loc[57000<sub_df['Next_Premium_4'],'Next_Premium_3'] = np.nan
+
+
+
+
+      sub_df['Next_Premium'] = sub_df[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3', 'Next_Premium_4']].mean(axis=1)
+
+      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_select_remove.csv', index= False)
 
       
-    #sub_df['diff'] = sub_df['Next_Premium'] - sub_df['Next_Premium_1']   
-
 if __name__ == "__main__":
     with timer("Full model run"):
       main(file_name='submission_log_score5.csv')
@@ -400,11 +447,22 @@ df_raw = pd.read_csv('training-set.csv')
 
 df_raw.to_pickle('df_raw_cached')
 
-sns.distplot(df_raw['Next_Premium'], label = 'true')
-sns.distplot(df_raw['Next_Premium_1'], label = '1')
-sns.distplot(df_raw['Next_Premium_7'].fillna(0), label = '2')
+not_na = df_raw[df_raw['Next_Premium_4'].notnull()]
+
+
+sns.distplot(not_na['Next_Premium'], label = 'true')
+sns.distplot(not_na['Next_Premium_4'], label = '4')
 plt.legend()
 
+sub_df['Next_Premium_1'] = sub_df['Next_Premium_1'].apply(lambda x: 0 if x < 100 else x)
+
+mean_absolute_error(df_raw['Next_Premium'], df_raw[['to_zero_1', 'to_zero_2', 'to_zero_3', 'to_zero_4']].mean(axis=1))
+mean_absolute_error(df_raw['Next_Premium'], df_raw[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3', 'Next_Premium_4']].mean(axis=1))
+
+df_raw['diff_5'] = df_raw['to_zero_5'] - df_raw['Next_Premium']
+df_raw['to_zero_5'] = df_raw['Next_Premium_5'].apply(lambda x: 0 if x < 100 else x)
+df_raw.plot.scatter(x="Next_Premium", y="diff_5")
+plt.legend()
 
 result = pd.read_csv('submission_log_score4.csv')
 
@@ -443,6 +501,8 @@ val_train['set_0'] = val_train['Next_Premium'].apply(lambda x: 0 if x < 100 else
 mean_absolute_error(val_label, val_train['set_0'])
 val_train['second_set_0'] = val_train.apply(lambda x: 0 if pd.notnull(x['Next_Premium_y']) else x['set_0'], axis=1)
 mean_absolute_error(val_label, val_train['second_set_0'])
+
+
 
 
 '''
