@@ -11,11 +11,9 @@ import pandas as pd
 import gc
 import time
 from contextlib import contextmanager
-import xgboost as xgb
+from catboost import CatBoostRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import KFold
-import matplotlib.pyplot as plt
-import seaborn as sns
 import warnings
 import util
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -41,7 +39,7 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   po_agg = pd.read_pickle('policy_cached')
   return po_agg
 
-def kfold_xgb(df, num_folds, output_name):
+def kfold_cat(df, num_folds, output_name):
     # Divide in training/validation and test data
     train_df =df[df['Next_Premium'].notnull()]
     test_df = df[df['Next_Premium'].isnull()]
@@ -54,7 +52,6 @@ def kfold_xgb(df, num_folds, output_name):
     # Create arrays and dataframes to store results
     oof_preds = np.zeros(train_df.shape[0])
     sub_preds = np.zeros(test_df.shape[0])
-    feature_importance_df = pd.DataFrame()
     feats = [f for f in train_df.columns if f not in ['Policy_Number','Next_Premium','index']]
     
     valid_scores = []
@@ -67,41 +64,32 @@ def kfold_xgb(df, num_folds, output_name):
       # Validation data for the fold
       valid_features, valid_labels = np.array(train_df[feats].iloc[valid_idx]), train_df['Next_Premium'].iloc[valid_idx]
       
-      # XGB parameters 
-      params = {
-        'max_depth':6,
-        'min_child_weight':60,
-        'learning_rate':0.1,
-        'subsample':0.8715623,
-        'colsample_bytree':0.6,
-        'obj':'reg:linear',
-        'n_estimators':1000,
-        'eval_metric': 'mae'
-      }
-      clf = xgb.XGBModel(**params)
+
+      clf = CatBoostRegressor(iterations=800,
+                            learning_rate=0.1,
+                            depth=6,
+                            loss_function='MAE',
+                            eval_metric='MAE',
+                            random_seed=0,
+                            od_type='Iter',
+                            od_wait=50)
       
       clf.fit(
           train_features,
           train_labels,
           eval_set=[(train_features, train_labels), (valid_features,valid_labels)],
-          early_stopping_rounds=100,
+          use_best_model=True,
           verbose=False
       )
 
       oof_preds[valid_idx] = clf.predict(valid_features)
       sub_preds += clf.predict(np.array(test_df[feats])) / folds.n_splits
       
-      valid_score = clf.best_score
-      train_score = min(clf.evals_result()['validation_0']['mae'])
+      valid_score = mean_absolute_error(valid_labels, clf.predict(valid_features))
+      train_score = mean_absolute_error(train_labels, clf.predict(train_features))
       
       valid_scores.append(valid_score)
       train_scores.append(train_score)
-      
-      fold_importance_df = pd.DataFrame()
-      fold_importance_df["feature"] = feats
-      fold_importance_df["importance"] = clf.feature_importances_
-      fold_importance_df["fold"] = n_fold + 1
-      feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
       print('Fold %2d MAE : %.6f' % (n_fold + 1, mean_absolute_error(valid_labels, oof_preds[valid_idx])))
       del clf, train_features, train_labels, valid_features, valid_labels
       gc.collect()
@@ -109,8 +97,6 @@ def kfold_xgb(df, num_folds, output_name):
       
     print('Full MAE score %.6f' % mean_absolute_error(train_df['Next_Premium'], oof_preds))
 
-    feature_importance_df.to_csv('feature_importance_df.csv', index= False)
-    display_importances(feature_importance_df)
     print("val score: ", valid_scores, "\n train score: ", train_scores)
     
     sub_df = test_df[['Policy_Number']].copy()
@@ -124,19 +110,6 @@ def kfold_xgb(df, num_folds, output_name):
     val_df.rename(columns={'Next_Premium': output_name}, inplace=True)
 
     return sub_df, train_df['Next_Premium'], val_df
-    
-# Display/plot feature importance
-def display_importances(feature_importance_df_):
-    cols = feature_importance_df_[["feature", "importance"]].groupby("feature").mean().sort_values(by="importance", ascending=False)[:40].index
-    best_features = feature_importance_df_.loc[feature_importance_df_.feature.isin(cols)]
-    plt.figure(figsize=(12, 8))
-    sns.barplot(x="importance", y="feature", data=best_features.sort_values(by="importance", ascending=False))
-    plt.title('Features (avg over folds)')
-    plt.tight_layout
-    plt.savefig('importances01.png')
-    best_features.to_csv('best_features.csv', index= False)
-
-
 
 def main(file_name='default.csv'):
     df = application_train_test()
@@ -157,7 +130,7 @@ def main(file_name='default.csv'):
       print(df.shape)
       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
       print(df.shape)
-      sub_df_1, val_label_1, val_train_1 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_1')
+      sub_df_1, val_label_1, val_train_1 = kfold_cat(df, num_folds= 5, output_name='Next_Premium_1')
       df_raw = df_raw.merge(val_train_1, how='left',  on='Policy_Number')
       gc.collect()
     with timer("Run train with full data 2"):
@@ -165,7 +138,7 @@ def main(file_name='default.csv'):
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
       df = df[~mask]
       print(df.shape)
-      sub_df_2, _, val_train_2 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_2')
+      sub_df_2, _, val_train_2 = kfold_cat(df, num_folds= 5, output_name='Next_Premium_2')
       df_raw = df_raw.merge(val_train_2, how='left',  on='Policy_Number')
       del val_train_1
       gc.collect()
@@ -174,7 +147,7 @@ def main(file_name='default.csv'):
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
       df = df[~mask]
       print(df.shape)
-      sub_df_3, _, val_train_3 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_3')
+      sub_df_3, _, val_train_3 = kfold_cat(df, num_folds= 5, output_name='Next_Premium_3')
       df_raw = df_raw.merge(val_train_3, how='left',  on='Policy_Number')
       del val_train_2
       gc.collect()
@@ -187,7 +160,7 @@ def main(file_name='default.csv'):
       sub_df['Next_Premium'] = 0.33*sub_df['Next_Premium_1'] + \
                         0.33*sub_df['Next_Premium_2'] + \
                         0.34*sub_df['Next_Premium_3']
-      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_xgboost_blend.csv', index= False)
+      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_cat_blend.csv', index= False)
 
 
 if __name__ == "__main__":
