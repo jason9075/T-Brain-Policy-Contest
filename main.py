@@ -156,7 +156,7 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   policy.drop(columns=['Insured\'s_ID', 'Prior_Policy_Number', 'Vehicle_identifier',
                     'Vehicle_Make_and_Model1', 'Vehicle_Make_and_Model2',
                     'Coding_of_Vehicle_Branding_&_Type', 'fpt',
-                    'Insurance_Coverage', 'Distribution_Channel',
+                    'Distribution_Channel',
                     'ibirth', 'dbirth', 'aassured_zip',
                     'fequipment1', 'fequipment2', 'fequipment3',
                     'fequipment4', 'fequipment5', 'fequipment6',
@@ -277,7 +277,7 @@ def kfold_lgb(df, num_folds, output_name):
           train_set=dtrain,
           num_boost_round=10000,
           valid_sets=[dtrain, dvalid],
-          early_stopping_rounds=100,
+          early_stopping_rounds=50,
           #evals_result=evals_result,
           verbose_eval=False
       )
@@ -350,30 +350,94 @@ def main(file_name='default.csv'):
       df = df.join(cl, how='left', on='Policy_Number')
       del cl
       gc.collect()
-    with timer("Run train with full data 1"):
+    with timer("Drop unrelated columns"):
       print(df.shape)
       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
       print(df.shape)
-      sub_df_1, val_label_1, val_train_1 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_1')
-      df_raw = df_raw.merge(val_train_1, how='left',  on='Policy_Number')
+      
+    with timer("Run train with full data"):
+      sub_df, _, _ = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_5')
       gc.collect()
-    with timer("Run train with full data 2"):
-      df_to_remove = val_train_1[(3000<val_train_1['Next_Premium_1'])&(val_train_1['Next_Premium_1']<5000)]['Policy_Number']
-      mask = df['Policy_Number'].isin(df_to_remove.tolist())
+      
+    with timer("Run train with full data 223, 2426, 183, 2495, 1681"):
+      df_parts=df[df['POLICY_Premium_SUM']==223]
+      sub_df_223, _, val_train_223 = kfold_lgb(df_parts, num_folds= 3, output_name='Next_Premium_223')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
       df = df[~mask]
-      print(df.shape)
-      sub_df_2, _, val_train_2 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_2')
-      df_raw = df_raw.merge(val_train_2, how='left',  on='Policy_Number')
+      
+      df_parts=df[df['POLICY_Premium_SUM']==2426]
+      sub_df_2426, _, val_train_2426 = kfold_lgb(df_parts, num_folds= 3, output_name='Next_Premium_2426')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
+      df = df[~mask]
+      
+      df_parts=df[df['POLICY_Premium_SUM']==183]
+      sub_df_183, _, val_train_183 = kfold_lgb(df_parts, num_folds= 3, output_name='Next_Premium_183')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
+      df = df[~mask]
+      
+      df_parts=df[df['POLICY_Premium_SUM']==2495]
+      sub_df_2495, _, val_train_2495 = kfold_lgb(df_parts, num_folds= 3, output_name='Next_Premium_2495')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
+      df = df[~mask]
+      
+      df_parts=df[df['POLICY_Premium_SUM']==1681]
+      sub_df_1681, _, val_train_1681 = kfold_lgb(df_parts, num_folds= 3, output_name='Next_Premium_1681')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
+      df = df[~mask]
+      gc.collect()
+      
+      val_train_all = val_train_223.merge(val_train_2426, how='outer',  on='Policy_Number')
+      val_train_all = val_train_all.merge(val_train_183, how='outer',  on='Policy_Number')
+      val_train_all = val_train_all.merge(val_train_2495, how='outer',  on='Policy_Number')
+      val_train_all = val_train_all.merge(val_train_1681, how='outer',  on='Policy_Number')
+      del val_train_223, val_train_2426, val_train_183, val_train_2495, val_train_1681
+      gc.collect()
+    with timer("Run train with curr_premium_sum = 0 data "):
+      df_parts=df[df['POLICY_CURR_Premium_SUM']==0]
+      sub_df_cp0, _, val_train_cp0 = kfold_lgb(df_parts, num_folds= 5, output_name='Next_Premium_cp0')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
+      df = df[~mask]
+      val_train_all = val_train_all.merge(val_train_cp0, how='outer',  on='Policy_Number')
+      del val_train_cp0
+      gc.collect()
+    with timer("Run train with >30000"):
+      df_parts=df[df['POLICY_CURR_Premium_SUM']>30000]
+      sub_df_high, _, val_train_high = kfold_lgb(df_parts[df_parts['Next_Premium']!=0], num_folds= 5, output_name='Next_Premium_high')
+      mask = df['Policy_Number'].isin(df_parts['Policy_Number'].tolist())
+      df = df[~mask]
+      val_train_all = val_train_all.merge(val_train_high, how='outer',  on='Policy_Number')
+
+      
+      sub_df_rest, val_label_rest, val_train_rest = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_rest')
+      val_train_all = val_train_all.merge(val_train_rest, how='outer',  on='Policy_Number')
+      val_train_all['final'] = val_train_all[['Next_Premium_223', 'Next_Premium_2426',
+                   'Next_Premium_183', 'Next_Premium_2495', 'Next_Premium_1681',
+                   'Next_Premium_cp0','Next_Premium_high','Next_Premium_rest']].mean(axis=1)
+
+      df_raw = df_raw.merge(val_train_all[['Policy_Number', 'final']], how='left',  on='Policy_Number')
+      df_raw = df_raw.merge(df[['Policy_Number','POLICY_Insurance_Coverage_55J_MEAN',
+                                'POLICY_Insurance_Coverage_02K_MEAN', 'POLICY_Insurance_Coverage_00I_MEAN',
+                                'POLICY_Insurance_Coverage_04M_MEAN','POLICY_Insurance_Coverage_45@_MEAN']], how='left',  on='Policy_Number')
+      mean_absolute_error(df_raw['Next_Premium'], df_raw['final'].fillna(36000))
+
+      sub_df = sub_df.merge(sub_df_183, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_1681, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_223, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_2426, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_2495, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_cp0, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_high, how='left',  on='Policy_Number')
+      sub_df = sub_df.merge(sub_df_rest, how='left',  on='Policy_Number')
+
+      sub_df['Next_Premium_m'] = sub_df[['Next_Premium_223', 'Next_Premium_2426',
+                   'Next_Premium_183', 'Next_Premium_2495', 'Next_Premium_1681',
+                   'Next_Premium_cp0','Next_Premium_high','Next_Premium_rest']].mean(axis=1)
+      sub_df['Next_Premium_m'] = sub_df['Next_Premium_m'].apply(lambda x: 0 if x<0 else x)
+      sub_df['Next_Premium'] = sub_df['Next_Premium_m']
+      df_raw = df_raw.merge(df[['Policy_Number','POLICY_Insurance_Coverage_02K_MEAN']], how='left',  on='Policy_Number')
+      
       del val_train_1
-      gc.collect()
-    with timer("Run train with full data 3"):
-      df_to_remove = val_train_2[(1500<val_train_2['Next_Premium_2'])&(val_train_2['Next_Premium_2']<3000)]['Policy_Number']
-      mask = df['Policy_Number'].isin(df_to_remove.tolist())
-      df = df[~mask]
-      print(df.shape)
-      sub_df_3, _, val_train_3 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_3')
-      df_raw = df_raw.merge(val_train_3, how='left',  on='Policy_Number')
-      del val_train_2
+   
       gc.collect()
     with timer("Run train with full data 4"):
       df_to_remove = val_train_3[(5000<val_train_3['Next_Premium_3'])&(val_train_3['Next_Premium_3']<10000)]['Policy_Number']
@@ -432,7 +496,7 @@ def main(file_name='default.csv'):
 
       sub_df['Next_Premium'] = sub_df[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3', 'Next_Premium_4']].mean(axis=1)
 
-      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_select_remove.csv', index= False)
+      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_divide_mix.csv', index= False)
 
       
 if __name__ == "__main__":
@@ -447,17 +511,18 @@ df_raw = pd.read_csv('training-set.csv')
 
 df_raw.to_pickle('df_raw_cached')
 
-not_na = df_raw[df_raw['Next_Premium_4'].notnull()]
+not_na = df_223[df_223['Next_Premium'].notnull()]
 
 
 sns.distplot(not_na['Next_Premium'], label = 'true')
 sns.distplot(not_na['Next_Premium_4'], label = '4')
 plt.legend()
 
-sub_df['Next_Premium_1'] = sub_df['Next_Premium_1'].apply(lambda x: 0 if x < 100 else x)
+df_raw['Next_Premium_rest'] = df_raw['Next_Premium_rest'].apply(lambda x: 0 if x < 0 else x)
 
-mean_absolute_error(df_raw['Next_Premium'], df_raw[['to_zero_1', 'to_zero_2', 'to_zero_3', 'to_zero_4']].mean(axis=1))
-mean_absolute_error(df_raw['Next_Premium'], df_raw[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3', 'Next_Premium_4']].mean(axis=1))
+mean_absolute_error(not_na['Next_Premium'], not_na['POLICY_CURR_Premium_SUM'])
+mean_absolute_error(df_raw['Next_Premium'], df_raw['Mix'])
+df_raw['Mix']= df_raw[['Next_Premium_rest', 'Next_Premium_223', 'Next_Premium_2426', 'Next_Premium_183','Next_Premium_1681','Next_Premium_2495','Next_Premium_cp0_y']].mean(axis=1)
 
 df_raw['diff_5'] = df_raw['to_zero_5'] - df_raw['Next_Premium']
 df_raw['to_zero_5'] = df_raw['Next_Premium_5'].apply(lambda x: 0 if x < 100 else x)
