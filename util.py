@@ -162,5 +162,27 @@ def useless_columns():
           'POLICY_Imported_or_Domestic_Car_index_22_MEAN',
           'POLICY_Imported_or_Domestic_Car_index_23_MEAN',
           'POLICY_Imported_or_Domestic_Car_index_21_MEAN',
-          'POLICY_Imported_or_Domestic_Car_index_24_MEAN']
+          'POLICY_Imported_or_Domestic_Car_index_24_MEAN',
+          'POLICY_Insurance_Coverage_66C_MEAN',
+          'POLICY_Insurance_Coverage_33F_MEAN',
+          'POLICY_Insurance_Coverage_01J_MEAN',
+          'POLICY_Insurance_Coverage_32N_MEAN',
+          'POLICY_Insurance_Coverage_56B_MEAN',
+          'POLICY_Insurance_Coverage_57C_MEAN',
+          'POLICY_Insurance_Coverage_34P_MEAN',
+          'POLICY_Insurance_Coverage_70P_MEAN',
+          'POLICY_Insurance_Coverage_56K_MEAN',
+          'POLICY_Insurance_Coverage_36I_MEAN',
+          'POLICY_Insurance_Coverage_66L_MEAN',
+          'POLICY_Insurance_Coverage_70G_MEAN',
+          'POLICY_Insurance_Coverage_37J_MEAN',
+          'POLICY_Insurance_Coverage_67D_MEAN',
+          'POLICY_Insurance_Coverage_71H_MEAN',
+          'POLICY_Insurance_Coverage_68N_MEAN',
+          'POLICY_Insurance_Coverage_35H_MEAN',
+          'POLICY_Insurance_Coverage_09I_MEAN',
+          'POLICY_Insurance_Coverage_72@_MEAN',
+          'POLICY_Insurance_Coverage_68E_MEAN',
+          'POLICY_Insurance_Coverage_46A_MEAN']
+
   

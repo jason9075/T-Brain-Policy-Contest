@@ -28,6 +28,26 @@ def timer(title):
     yield
     print("{} - done in {:.0f}s".format(title, time.time() - t0))
 
+class Classifier:
+  def __init__(self, clfs):
+    # mi = input feature map size
+    # mo = output feature map size
+    # self.W = tf.Variable(0.02*tf.random_normal(shape=(filtersz, filtersz, mi, mo)))
+    # self.b = tf.Variable(np.zeros(mo, dtype=np.float32))
+    self.clfs = clfs
+  
+  def predict(self, df):
+    feats = [f for f in df.columns if f not in ['Policy_Number','Next_Premium','index']]
+
+    preds = np.zeros(df.shape[0])
+
+    for clf in self.clfs:
+      preds += clf.predict(df[feats])/len(self.clfs)
+    
+    output = df[['Policy_Number']].copy()
+    output['Next_Premium'] = preds
+    return output
+
 # Preprocess application_train.csv and application_test.csv
 def application_train_test():
   df = pd.read_pickle('application_train_test_cached')
@@ -157,12 +177,12 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   policy.drop(columns=['Insured\'s_ID', 'Prior_Policy_Number', 'Vehicle_identifier',
                     'Vehicle_Make_and_Model1', 'Vehicle_Make_and_Model2',
                     'Coding_of_Vehicle_Branding_&_Type', 'fpt',
-                    'Insurance_Coverage', 'Distribution_Channel',
+                    'Distribution_Channel',
                     'ibirth', 'dbirth', 'aassured_zip',
                     'fequipment1', 'fequipment2', 'fequipment3',
                     'fequipment4', 'fequipment5', 'fequipment6',
                     'fequipment9', 'nequipment9'], inplace=True)
-
+  
   policy, polict_cat = util.one_hot_encoder(policy, nan_as_category=False,
                           exclude_list=['Policy_Number'])
 
@@ -218,8 +238,19 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   
   for col in policy_curr_agg.columns.tolist():
     policy_agg[col] = policy_agg[col].fillna(0)
+    
+  num_aggregations = {'Premium': ['max', 'sum']}
+  
+  excludes = ['00I','55J','02K','45@','04M','14N','51O','16G','16P','05N']
+  for exclude in excludes:
+    policy_exclude = policy[policy['Insurance_Coverage_'+exclude]!=1]
+    policy_exclude = policy_exclude.groupby('Policy_Number')['Premium'] \
+                                    .agg(num_aggregations)
+    policy_exclude.columns = pd.Index(['POLICY_EX_' + exclude + '_' + e[0] + "_" + e[1].upper() for e in policy_exclude.columns.tolist()])
+    policy_agg = policy_agg.join(policy_exclude, how='left', on='Policy_Number')
 
-  del policy, policy_curr_agg
+
+  del policy, policy_curr, policy_curr_agg
   gc.collect()
     
   #cached
@@ -243,6 +274,8 @@ def kfold_lgb(df, num_folds, output_name):
     
     valid_scores = []
     train_scores = []
+    
+    clfs = []
 
     for n_fold, (train_idx, valid_idx) in enumerate(folds.split(train_df[feats], train_df['Next_Premium'])):
       dtrain = lgb.Dataset(data=train_df[feats].iloc[train_idx], 
@@ -283,6 +316,8 @@ def kfold_lgb(df, num_folds, output_name):
           verbose_eval=False
       )
       
+      clfs.append(clf)
+      
       #print('Plot metrics recorded during training...')
       #lgb.plot_metric(evals_result, metric='l1')
 
@@ -321,7 +356,7 @@ def kfold_lgb(df, num_folds, output_name):
     val_df['Next_Premium'] = val_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
     val_df.rename(columns={'Next_Premium': output_name}, inplace=True)
 
-    return sub_df, train_df['Next_Premium'], val_df
+    return sub_df, train_df['Next_Premium'], val_df, Classifier(clfs)
   
 def kfold_lgb_cat(df, num_folds):
     # Divide in training/validation and test data
@@ -341,6 +376,8 @@ def kfold_lgb_cat(df, num_folds):
     
     valid_scores = []
     train_scores = []
+
+    clfs=[]
 
     for n_fold, (train_idx, valid_idx) in enumerate(folds.split(train_df[feats], train_df['Next_Premium'])):
       dtrain = lgb.Dataset(data=train_df[feats].iloc[train_idx], 
@@ -375,9 +412,11 @@ def kfold_lgb_cat(df, num_folds):
           train_set=dtrain,
           num_boost_round=10000,
           valid_sets=[dtrain, dvalid],
-          early_stopping_rounds=100,
+          early_stopping_rounds=50,
           verbose_eval=False
       )
+      
+      clfs.append(clf)
 
       oof_preds[valid_idx] = clf.predict(dvalid.data)
       sub_preds += clf.predict(test_df[feats]) / folds.n_splits
@@ -410,7 +449,7 @@ def kfold_lgb_cat(df, num_folds):
     val_df = train_df[['Policy_Number']].copy()
     val_df['Next_Premium'] = oof_preds
     
-    return sub_df, train_df['Next_Premium'], val_df
+    return sub_df, train_df['Next_Premium'], val_df, Classifier(clfs)
     
 # Display/plot feature importance
 def display_importances(feature_importance_df_):
@@ -440,19 +479,25 @@ def main(file_name='default.csv'):
       df = df.join(cl, how='left', on='Policy_Number')
       del cl
       gc.collect()
-    with timer("Run train with full data 1"):
+    with timer("drop columns"):
       print(df.shape)
       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
       print(df.shape)
-      sub_df_1, val_label_1, val_train_1 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_1')
+    with timer("Run train with full data 1"):
+      sub_df_1, val_label_1, val_train_1, clf1= kfold_lgb(df, num_folds= 5, output_name='Next_Premium_1')
       df_raw = df_raw.merge(val_train_1, how='left',  on='Policy_Number')
       gc.collect()
     with timer("Run train with full data 2"):
       df_to_remove = val_train_1[val_train_1['Next_Premium_1']==0]['Policy_Number']
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
+      df_backup2 = df[mask]
       df = df[~mask]
       print(df.shape)
-      sub_df_2, _, val_train_2 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_2')
+      sub_df_2, _, val_train_2, clf2 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_2')
+      df_backup2_res = clf2.predict(df_backup2)
+      val_train_2 = val_train_2.merge(df_backup2_res,how='outer',  on='Policy_Number')
+      val_train_2['Next_Premium_2'] = val_train_2[['Next_Premium_2','Next_Premium']].max(axis=1)
+      val_train_2.drop(columns=['Next_Premium'], inplace=True)
       df_raw = df_raw.merge(val_train_2, how='left',  on='Policy_Number')
       del val_train_1
       gc.collect()
@@ -465,59 +510,18 @@ def main(file_name='default.csv'):
       df_raw = df_raw.merge(val_train_3, how='left',  on='Policy_Number')
       del val_train_2
       gc.collect()
-    with timer("Run train with full data 4"):
-      df_to_remove = val_train_3[val_train_3['Next_Premium_3']==0]['Policy_Number']
-      mask = df['Policy_Number'].isin(df_to_remove.tolist())
-      df = df[~mask]
-      print(df.shape)
-      sub_df_4, _, val_train_4 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_4')
-      df_raw = df_raw.merge(val_train_4, how='left',  on='Policy_Number')
-      del val_train_3
-      gc.collect()
-    with timer("Run train with full data 5"):
-      df_to_remove = val_train_4[val_train_4['Next_Premium_4']==0]['Policy_Number']
-      mask = df['Policy_Number'].isin(df_to_remove.tolist())
-      df = df[~mask]
-      print(df.shape)
-      sub_df_5, _, val_train_5 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_5')
-      df_raw = df_raw.merge(val_train_5, how='left',  on='Policy_Number')
-      del val_train_4
-      gc.collect()
-    with timer("Run train with full data 6"):
-      df_to_remove = val_train_5[val_train_5['Next_Premium_5']==0]['Policy_Number']
-      mask = df['Policy_Number'].isin(df_to_remove.tolist())
-      df = df[~mask]
-      print(df.shape)
-      sub_df_6, _, val_train_6 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_6')
-      df_raw = df_raw.merge(val_train_6, how='left',  on='Policy_Number')
-      del val_train_5
-      gc.collect()
-    with timer("Run train with full data 7"):
-      df_to_remove = val_train_6[val_train_6['Next_Premium_6']==0]['Policy_Number']
-      mask = df['Policy_Number'].isin(df_to_remove.tolist())
-      df = df[~mask]
-      print(df.shape)
-      sub_df_7, _, val_train_7 = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_7')
-      df_raw = df_raw.merge(val_train_7, how='left',  on='Policy_Number')
-      del val_train_6
-      gc.collect()
     with timer("blend out put"):
       sub_df = sub_df_1.merge(sub_df_2, how='left',  on='Policy_Number')
       sub_df = sub_df.merge(sub_df_3, how='left',  on='Policy_Number')
-      sub_df = sub_df.merge(sub_df_4, how='left',  on='Policy_Number')
-      sub_df = sub_df.merge(sub_df_5, how='left',  on='Policy_Number')
-      sub_df = sub_df.merge(sub_df_6, how='left',  on='Policy_Number')
-      sub_df = sub_df.merge(sub_df_7, how='left',  on='Policy_Number')
 
 
-      sub_df['Next_Premium'] = 0.03*sub_df['Next_Premium_1'] + \
-                        0.07*sub_df['Next_Premium_2'] + \
-                        0.11*sub_df['Next_Premium_3'] + \
-                        0.14*sub_df['Next_Premium_4'] + \
-                        0.16*sub_df['Next_Premium_5'] + \
-                        0.19*sub_df['Next_Premium_6'] + \
-                        0.3*sub_df['Next_Premium_7']
-      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_blend.csv', index= False)
+      sub_df['Next_Premium'] = sub_df[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3']].mean(axis=1)  
+      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_blend_with_coverage.csv', index= False)
+      df_raw['predict'] = df_raw[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3']].mean(axis=1)
+      
+      df_not_na = df_raw[df_raw['Next_Premium_3'].notnull()]
+      
+      mean_absolute_error(df_raw['Next_Premium_x'], df_raw['Next_Premium_2'].fillna(0))
 
       
     sub_df['diff'] = sub_df['Next_Premium'] - sub_df['Next_Premium_1']
@@ -533,7 +537,7 @@ def main(file_name='default.csv'):
     mix = val_train_no_claim.merge(val_train_claim, how='left', on='Policy_Number')
     mix['Next_Premium']= mix[['Next_Premium_x', 'Next_Premium_y']].mean(axis=1)  
     
-    mean_absolute_error(val_label_no_claim)
+    mean_absolute_error(df_raw['Next_Premium'],df_raw['Next_Premium_1'])
     
 
 if __name__ == "__main__":
