@@ -41,11 +41,35 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   po_agg = pd.read_pickle('policy_cached')
   return po_agg
 
+def logcoshobj(dtrain, preds):
+    d = preds - dtrain 
+    grad = np.tanh(d)/dtrain
+    hess = (1.0 - grad*grad)/dtrain
+    return grad, hess
+
+def fair_obj(preds, dtrain):
+    """y = c * abs(x) - c * np.log(abs(abs(x) + c))"""
+    x = dtrain.get_labels() - preds
+    c = 1
+    den = abs(x) + c
+    grad = c*x / den
+    hess = c*c / den ** 2
+    return grad, hess
+
+def huber_approx_obj(preds, dtrain):
+  d = dtrain.get_labels() - preds  #remove .get_labels() for sklearn
+  h = 1  #h is delta in the graphic
+  scale = 1 + (d / h) ** 2
+  scale_sqrt = np.sqrt(scale)
+  grad = d / scale_sqrt
+  hess = 1 / scale / scale_sqrt
+  return grad, hess
+
 def kfold_xgb(df, num_folds, output_name):
     # Divide in training/validation and test data
     train_df =df[df['Next_Premium'].notnull()]
     test_df = df[df['Next_Premium'].isnull()]
-    print("Starting LGB. Train shape: {}, test shape: {}".format(train_df.shape, test_df.shape))
+    print("Starting XGB. Train shape: {}, test shape: {}".format(train_df.shape, test_df.shape))
     del df
     gc.collect()
     # Cross validation model
@@ -72,10 +96,12 @@ def kfold_xgb(df, num_folds, output_name):
         'max_depth':6,
         'min_child_weight':60,
         'learning_rate':0.1,
-        'subsample':0.8715623,
+        'subsample':0.8,
         'colsample_bytree':0.6,
-        'obj':'reg:linear',
+        'obj': logcoshobj,
         'n_estimators':1000,
+        'alpha':1,
+        'lambda':1,
         'eval_metric': 'mae'
       }
       clf = xgb.XGBModel(**params)
@@ -84,15 +110,15 @@ def kfold_xgb(df, num_folds, output_name):
           train_features,
           train_labels,
           eval_set=[(train_features, train_labels), (valid_features,valid_labels)],
-          early_stopping_rounds=100,
+          early_stopping_rounds=50,
           verbose=False
       )
 
       oof_preds[valid_idx] = clf.predict(valid_features)
       sub_preds += clf.predict(np.array(test_df[feats])) / folds.n_splits
       
-      valid_score = clf.best_score
-      train_score = min(clf.evals_result()['validation_0']['mae'])
+      valid_score = mean_absolute_error(np.expm1(valid_labels), np.expm1(oof_preds[valid_idx]))
+      train_score = mean_absolute_error(np.expm1(train_labels), np.expm1(clf.predict(train_features)))
       
       valid_scores.append(valid_score)
       train_scores.append(train_score)
@@ -102,28 +128,26 @@ def kfold_xgb(df, num_folds, output_name):
       fold_importance_df["importance"] = clf.feature_importances_
       fold_importance_df["fold"] = n_fold + 1
       feature_importance_df = pd.concat([feature_importance_df, fold_importance_df], axis=0)
-      print('Fold %2d MAE : %.6f' % (n_fold + 1, mean_absolute_error(valid_labels, oof_preds[valid_idx])))
+      print('Fold %2d MAE : %.6f' % (n_fold + 1, mean_absolute_error(np.expm1(valid_labels), np.expm1(oof_preds[valid_idx]))))
       del clf, train_features, train_labels, valid_features, valid_labels
       gc.collect()
       
       
-    print('Full MAE score %.6f' % mean_absolute_error(train_df['Next_Premium'], oof_preds))
+    print('Full MAE score %.6f' % mean_absolute_error(np.expm1(train_df['Next_Premium']), np.expm1(oof_preds)))
 
     feature_importance_df.to_csv('feature_importance_df.csv', index= False)
     display_importances(feature_importance_df)
     print("val score: ", valid_scores, "\n train score: ", train_scores)
     
     sub_df = test_df[['Policy_Number']].copy()
-    sub_df['Next_Premium'] = sub_preds
-    sub_df['Next_Premium'] = sub_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
+    sub_df['Next_Premium'] = np.expm1(sub_preds)
     sub_df.rename(columns={'Next_Premium': output_name}, inplace=True)
     
     val_df = train_df[['Policy_Number']].copy()
-    val_df['Next_Premium'] = oof_preds
-    val_df['Next_Premium'] = val_df['Next_Premium'].apply(lambda x: 0 if x < 100 else x)
+    val_df['Next_Premium'] = np.expm1(oof_preds)
     val_df.rename(columns={'Next_Premium': output_name}, inplace=True)
 
-    return sub_df, train_df['Next_Premium'], val_df
+    return sub_df, np.expm1(train_df['Next_Premium']), val_df
     
 # Display/plot feature importance
 def display_importances(feature_importance_df_):
@@ -157,9 +181,11 @@ def main(file_name='default.csv'):
       print(df.shape)
       df.drop(columns=util.useless_columns(), inplace=True, errors='ignore')
       print(df.shape)
-      sub_df_1, val_label_1, val_train_1 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_1')
+      sub_df_1, val_label_1, val_train_1 = kfold_xgb(df, num_folds= 5, output_name='Next_Premium_log')
       df_raw = df_raw.merge(val_train_1, how='left',  on='Policy_Number')
       gc.collect()
+      
+      
     with timer("Run train with full data 2"):
       df_to_remove = val_train_1[val_train_1['Next_Premium_1']==0]['Policy_Number']
       mask = df['Policy_Number'].isin(df_to_remove.tolist())
