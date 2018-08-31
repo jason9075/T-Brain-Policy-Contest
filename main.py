@@ -21,6 +21,11 @@ import warnings
 import util
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
+CAT_FEAT = ['Imported_or_Domestic_Car',
+            'fassured', 'iply_area',
+            'lia_class', 'plia_acc',
+            'pdmg_acc']
+
 @contextmanager
 def timer(title):
     t0 = time.time()
@@ -134,7 +139,6 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   policy['New_Insured_Amount_max'] = policy[['Insured_Amount1', 'Insured_Amount2', 'Insured_Amount3']].max(axis=1)
   policy['Manafactured_Year_and_Month_diff'] = 2018 - policy['Manafactured_Year_and_Month']  
   policy['Cancellation'], _ = pd.factorize(policy['Cancellation'])
-  policy['Imported_or_Domestic_Car'] = "index_" + policy['Imported_or_Domestic_Car'].astype(str)
   policy['Policy_days_from_ibirth'] = policy['ibirth'].apply(lambda x: \
     x if pd.isnull(x) else datetime.strptime('07/2018', "%m/%Y") - datetime.strptime(x, "%m/%Y")).dt.days
 
@@ -149,11 +153,12 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   policy['fmarriage'], _ = pd.factorize(policy['fsex'])
   policy['fmarriage'].replace(-1, np.nan, inplace=True)
   
+  policy['Imported_or_Domestic_Car'], _ = pd.factorize(policy['Imported_or_Domestic_Car'])
   policy['fassured'], _ = pd.factorize(policy['fassured'])
-  policy['fassured'] = "cat_" + policy['fassured'].astype(str)
-  
   policy['iply_area'], _ = pd.factorize(policy['iply_area'])
-  policy['iply_area'] = "area_" + policy['iply_area'].astype(str)
+  policy['lia_class'], _ = pd.factorize(policy['lia_class'])
+  policy['plia_acc'], _ = pd.factorize(policy['plia_acc'])
+  policy['pdmg_acc'], _ = pd.factorize(policy['pdmg_acc'])
   
   def deductible(df):
     if df['Coverage_Deductible_if_applied'] <0:
@@ -173,6 +178,9 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
     return df['Coverage_Deductible_if_applied']
   
   policy['Deductible_calc'] = policy.apply(deductible, axis=1)
+  
+  policy_category = policy.groupby('Policy_Number')[CAT_FEAT].first()
+
 
   policy.drop(columns=['Insured\'s_ID', 'Prior_Policy_Number', 'Vehicle_identifier',
                     'Vehicle_Make_and_Model1', 'Vehicle_Make_and_Model2',
@@ -189,7 +197,7 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   num_aggregations = {
     'Manafactured_Year_and_Month': ['max'], # all same
     'Manafactured_Year_and_Month_diff': ['max'], # all same
-    'Engine_Displacement_(Cubic_Centimeter)': ['max'],# all same
+    'Engine_Displacement_(Cubic_Centimeter)': ['max'], # all same 
     'Insured_Amount1': ['max', 'mean', 'sum'],
     'Insured_Amount2': ['max', 'mean', 'sum'],
     'Insured_Amount3': ['max', 'mean', 'sum'],
@@ -197,9 +205,6 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
     'Deductible_calc': ['max', 'mean', 'sum'],
     'qpt':['max', 'mean'],
     'Multiple_Products_with_TmNewa_(Yes_or_No?)': ['max', 'mean', 'sum'],
-    'lia_class': ['max', 'mean'],
-    'plia_acc': ['max', 'mean'],
-    'pdmg_acc': ['max', 'mean'],
     'Coverage_Deductible_if_applied': ['max', 'mean', 'sum'],
     'Premium': ['max', 'mean', 'sum'],
     'Replacement_cost_of_insured_vehicle': ['max', 'mean', 'sum'],
@@ -210,14 +215,14 @@ def policy_read(num_rows = None, nan_as_category = True, epison=1):
   cat_aggregations = {}
   for cat in [c for c in polict_cat if 'Insurance_Coverage' in c]: \
                                         cat_aggregations[cat] = ['sum']
-  for cat in [c for c in polict_cat if 'Insurance_Coverage' not in c]: \
-                                          cat_aggregations[cat] = ['mean']
   
   policy_agg = policy.groupby('Policy_Number').agg({**num_aggregations, **cat_aggregations})
   policy_agg.columns = pd.Index(['POLICY_' + e[0] + "_" + e[1].upper() for e in policy_agg.columns.tolist()])
   policy_agg['POLICY_COUNT'] = policy.groupby('Policy_Number') \
-                                    .size()       
-                                    
+                                    .size()    
+                                 
+  policy_agg = policy_agg.merge(policy_category, how='left', on='Policy_Number' )
+                                                    
   policy_curr = policy[(policy['Coverage_Deductible_if_applied']>=0)&
       (policy['Insured_Amount1']>0) |
       (policy['Insured_Amount2']>0) |
@@ -270,6 +275,7 @@ def kfold_lgb(df, num_folds, output_name):
     for n_fold, (train_idx, valid_idx) in enumerate(folds.split(train_df[feats], train_df['Next_Premium'])):
       dtrain = lgb.Dataset(data=train_df[feats].iloc[train_idx], 
                              label=train_df['Next_Premium'].iloc[train_idx], 
+                             categorical_feature=CAT_FEAT,
                              free_raw_data=False, silent=True)
       dvalid = lgb.Dataset(data=train_df[feats].iloc[valid_idx], 
                            label=train_df['Next_Premium'].iloc[valid_idx], 
@@ -392,9 +398,10 @@ def main(file_name='default.csv'):
       mean_absolute_error(df_raw['Next_Premium'], df_raw['Next_Premium_boost'])
 
 
+      sub_df_1['Next_Premium'] = sub_df_1['Next_Premium_1']
       sub_df['Next_Premium'] = sub_df[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3', 'Next_Premium_4']].mean(axis=1)
 
-      sub_df[['Policy_Number', 'Next_Premium']].to_csv('sub_file_two_lgbm.csv', index= False)
+      sub_df_1[['Policy_Number', 'Next_Premium']].to_csv('sub_file_categort_lgbm.csv', index= False)
 
       
 if __name__ == "__main__":
