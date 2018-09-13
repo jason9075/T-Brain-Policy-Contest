@@ -54,7 +54,11 @@ def application_train_test():
   return df
   # Read data and merge
   df = pd.read_csv('training-set.csv')  
-  #df["Next_Premium"] = np.log1p(df["Next_Premium"])
+  excp = pd.read_csv('Exception/duplicate_policy.csv', header=None)  
+  excp= excp[0].tolist()
+  mask = df['Policy_Number'].isin(excp)
+  df = df[~mask]
+
   test_df = pd.read_csv('testing-set.csv')
   test_df['Next_Premium'] = np.nan
   print("Train samples: {}, test samples: {}".format(len(df), len(test_df)))
@@ -276,7 +280,7 @@ def kfold_lgb(df, num_folds, output_name):
       
       # LightGBM parameters found by Bayesian optimization
       params = {
-          'objective': 'regression_l2',
+          'objective': 'regression_l1',
           'boosting_type': 'gbdt',
           'nthread': 2,
           'learning_rate': 0.05,  # 02,
@@ -523,7 +527,7 @@ def main(file_name='default.csv'):
       df = df.merge(new_feat_pay_more, how='left', on='Policy_Number')
       df = df.merge(new_feat_pay_less, how='left', on='Policy_Number')
       df = df.merge(new_feat_not_much_diff, how='left', on='Policy_Number')
-      del new_feat_pay_flag, new_feat_pay_more, new_feat_pay_less
+      #del new_feat_pay_flag, new_feat_pay_more, new_feat_pay_less
       
     with timer("Learn Diff"):
       df.drop(columns=util.useless_diff_columns(), inplace=True, errors='ignore')
@@ -532,10 +536,33 @@ def main(file_name='default.csv'):
       sub_df_diff, _, val_train_diff, _ = kfold_lgb(df, num_folds= 5, output_name='Next_Premium_diff')
       df_raw = df_raw.merge(val_train_diff, how='left', on='Policy_Number')
       df_raw = df_raw.merge(df[['Policy_Number','POLICY_CURR_Premium_SUM','POLICY_Insured_Amount3_MAX']], how='left',  on='Policy_Number')
-      df_raw['eval'] = df_raw['POLICY_CURR_Premium_SUM'] + df_raw['Next_Premium_diff']
-      df_raw['eval_diff'] = df_raw['eval'] - df_raw['Next_Premium']
+      df_raw['eval'] = df_raw['POLICY_CURR_Premium_SUM'] + df_raw['Next_Premium_diff']      
+      df_raw['eval_motify'] = df_raw['eval'].apply(lambda x: 0 if x< 0 else x)
+      df_raw = df_raw.merge(val_train, how='left', on='Policy_Number')
+      df_raw.rename(columns={'Next_Premium_diff_y': 'direct_eval'}, inplace=True)
+      df_raw['direct_eval'] = df_raw['direct_eval'].apply(lambda x: 0 if x< 0 else x)
 
-      mean_absolute_error(df_raw['Next_Premium'], df_raw['eval'])
+
+sum(abs(df_raw['Next_Premium_diff_x'])>15000)
+
+      df_raw['diff_high_var'] = abs(df_raw['Next_Premium_diff_x'])>15000
+      df_raw['direct_high_var'] = abs(df_raw['direct_eval'])>40000
+      
+      df_raw['selection_eval'] = df_raw.apply(lambda x: x['direct_eval'] if (x['POLICY_CURR_Premium_SUM']>=210000) else \
+            x['eval_motify'] if ((x['POLICY_CURR_Premium_SUM']<210000) & (x['POLICY_CURR_Premium_SUM']>=150000)) else \
+            x['direct_eval'] if ((x['POLICY_CURR_Premium_SUM']<150000) & (x['POLICY_CURR_Premium_SUM']>120000)) else \
+ #           x['eval_motify'] if ((x['diff_high_var']==0) & (x['direct_high_var']==1)) else \
+#            x['direct_eval'] if ((x['diff_high_var']==1) & (x['direct_high_var']==0)) else \
+            0.6*x['eval_motify'] + 0.4*x['direct_eval'], axis=1)
+      
+      df_raw['selection_eval'] = df_raw.apply(lambda x: 0.6*x['eval_motify'] + 0.4*x['direct_eval'], axis=1)
+
+ 
+      mean_absolute_error(df_raw['Next_Premium'], df_raw['eval_motify'])
+      mean_absolute_error(df_raw['Next_Premium'], df_raw['direct_eval'])
+
+      mean_absolute_error(df_raw['Next_Premium'], df_raw['selection_eval'])
+
 
       gc.collect()
       
@@ -578,7 +605,6 @@ def main(file_name='default.csv'):
       mean_absolute_error(df_raw['True_value'], df_raw['new_eval'])
       mean_absolute_error(df_raw['True_value'], (df_raw['POLICY_CURR_Premium_SUM']*df_raw['cat_score'])+400)
 
-      
       df_raw = df_raw.merge(df[['Policy_Number', 'POLICY_CURR_Premium_SUM']], how='left',  on='Policy_Number')
 
 
@@ -586,7 +612,19 @@ def main(file_name='default.csv'):
       sub_df_diff = sub_df_diff.merge(df[['Policy_Number', 'POLICY_CURR_Premium_SUM']], how='left',  on='Policy_Number')
       sub_df_diff['Next_Premium'] = sub_df_diff['POLICY_CURR_Premium_SUM'] + sub_df_diff['Next_Premium_diff']
       sub_df_diff['Next_Premium'] = sub_df_diff['Next_Premium'].apply(lambda x: 0 if x< 0 else x)
-      sub_df_diff[['Policy_Number', 'Next_Premium']].to_csv('sub_file_use_diff.csv', index= False)
+      sub_df_diff = sub_df_diff.merge(sub_df, how='left',  on='Policy_Number')
+      sub_df_diff['Next_Premium_diff_y'] = sub_df_diff['Next_Premium_diff_y'].apply(lambda x: 0 if x< 0 else x)
+      sub_df_diff.rename(columns={'Next_Premium': 'diff_result'}, inplace=True)
+
+      sub_df_diff['Next_Premium'] = 0.7*sub_df_diff['diff_result'] + 0.3*sub_df_diff['Next_Premium_diff_y']
+      sub_df_diff['Next_Premium'] = sub_df_diff.apply(lambda x: x['Next_Premium_diff_y'] if (x['POLICY_CURR_Premium_SUM']>=210000) else \
+            x['diff_result'] if ((x['POLICY_CURR_Premium_SUM']<210000) & (x['POLICY_CURR_Premium_SUM']>=150000)) else \
+            x['Next_Premium_diff_y'] if ((x['POLICY_CURR_Premium_SUM']<150000) & (x['POLICY_CURR_Premium_SUM']>120000)) else \
+            0.6*x['diff_result'] + 0.4*x['Next_Premium_diff_y'], axis=1)
+  
+
+
+      sub_df_diff[['Policy_Number', 'Next_Premium']].to_csv('sub_file_remove_excp_60_40_divide.csv', index= False)
 
       
       sub_df['Next_Premium'] = sub_df[['Next_Premium_1', 'Next_Premium_2', 'Next_Premium_3', 'Next_Premium_4']].mean(axis=1)
